@@ -1,0 +1,107 @@
+version: '3.8'
+
+services:
+  # MongoDB with Single-Node Replica Set (for ACID transactions)
+  mongo:
+    image: mongo:7.0
+    container_name: taskmaster-mongo
+    restart: unless-stopped
+    ports:
+      - '27017:27017'
+    environment:
+      - MONGO_INITDB_DATABASE=taskmaster
+    command: ['--replSet', 'rs0', '--bind_ip_all']
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --eval 'rs.status().ok || rs.initiate().ok' --quiet"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # Redis for Caching, Rate Limiting, BullMQ & Socket.IO adapter
+  redis:
+    image: redis:7-alpine
+    container_name: taskmaster-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # MailHog for local development email testing
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: taskmaster-mailhog
+    restart: unless-stopped
+    ports:
+      - '1025:1025' # SMTP server
+      - '8025:8025' # Web UI
+    healthcheck:
+      test: ['CMD', 'nc', '-z', 'localhost', '1025']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  # API Service
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: taskmaster-api
+    restart: unless-stopped
+    ports:
+      - '5000:5000'
+    environment:
+      - NODE_ENV=production
+      - PORT=5000
+      - MONGODB_URI=mongodb://mongo:27017/taskmaster?replicaSet=rs0
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - SMTP_HOST=mailhog
+      - SMTP_PORT=1025
+      - CORS_ORIGIN=http://localhost:3000
+      - JWT_ACCESS_SECRET=super-secret-access-token-key-change-in-production-min-32-chars
+      - JWT_REFRESH_SECRET=super-secret-refresh-token-key-change-in-production-min-32-chars
+      - ENCRYPTION_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --no-verbose --tries=1 --spider http://localhost:5000/health/live || exit 1']
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Web Service
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: taskmaster-web
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_APP_NAME=TaskMaster
+      - NEXT_PUBLIC_APP_URL=http://localhost:3000
+      - NEXT_PUBLIC_API_URL=http://localhost:5000/api/v1
+      - NEXT_PUBLIC_WS_URL=http://localhost:5000
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  mongo_data:
+  redis_data:
